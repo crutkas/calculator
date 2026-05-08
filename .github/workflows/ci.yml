@@ -69,41 +69,21 @@ jobs:
           Set-ItemProperty -Path $key -Name AllowAllTrustedApps -Value 1 -Type DWord
           Get-ItemProperty -Path $key | Format-List
 
-      - name: Publish WinUICalc (loose layout for launch)
-        # NOTE: We can't use --no-build here because building the .sln at
-        # Platform=x64 maps WinUICalc.Core to AnyCPU (per the .sln project
-        # mappings), but project-level publish propagates Platform=x64 to
-        # ProjectReferences and looks for Core.dll under bin\x64\Release.
-        # We also disable trimming and ReadyToRun on CI: they aren't needed
-        # for tests, and the trimmer trips over the same project-ref path
-        # mismatch (Mono.Linker probes Core at bin\x64\Release\net9.0\).
-        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false --no-restore
-
-      - name: Install Windows App Runtime 2.0.1 (framework package)
-        # WinAppSDK 2.0.x's Microsoft.UI.Xaml.dll v3.2.0.0 fails to initialize
-        # in self-contained mode on Windows Server 2025 (0xc000027b inside
-        # Microsoft.UI.Xaml.dll). Installing the real framework MSIX gives
-        # the XAML runtime a stable, system-managed home and lets the
-        # packaged dev identity activate cleanly via AUMID.
-        shell: pwsh
-        run: |
-          $installer = Get-ChildItem -Path "$env:USERPROFILE\.nuget\packages\microsoft.windowsappsdk\*\tools\WindowsAppRuntimeInstall*.exe" -ErrorAction SilentlyContinue |
-                       Sort-Object FullName -Descending |
-                       Select-Object -First 1 -ExpandProperty FullName
-          if (-not $installer) {
-            Write-Host "WindowsAppRuntimeInstall not found in NuGet cache; downloading from aka.ms..." -ForegroundColor Yellow
-            $installer = Join-Path $env:RUNNER_TEMP 'windowsappruntimeinstall-x64.exe'
-            Invoke-WebRequest -Uri 'https://aka.ms/windowsappsdk/2.0/2.0.1/windowsappruntimeinstall-x64.exe' -OutFile $installer
-          }
-          Write-Host "Using installer: $installer"
-          & $installer --quiet
-          Write-Host "Installer exit: $LASTEXITCODE"
-          # 0 = success; ERROR_SUCCESS_REBOOT_INITIATED (1641) / REBOOT_REQUIRED (3010) are also fine.
-          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1641 -and $LASTEXITCODE -ne 3010) {
-            throw "WindowsAppRuntimeInstall failed (exit $LASTEXITCODE)"
-          }
-          Write-Host "Registered WindowsAppRuntime packages:"
-          Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime*' | Select-Object Name, Version | Format-Table -AutoSize
+      - name: Publish WinUICalc (packaged self-contained loose layout)
+        # WindowsAppSdkSelfContained=true colocates the WinAppSDK runtime
+        # into the publish folder AND tells the SDK targets to skip the
+        # AutoInitialize module initializer that would otherwise call
+        # DeploymentManager.Initialize() at startup (which throws
+        # "Class not registered" on a runner where the framework isn't
+        # registered as a package dependency).
+        # We can't use --no-build because building the .sln at Platform=x64
+        # maps WinUICalc.Core to AnyCPU per the .sln, but project-level
+        # publish propagates Platform=x64 to ProjectReferences and looks
+        # for Core.dll at bin\x64\Release\net9.0\.
+        # Trim and ReadyToRun are turned off for the same project-ref
+        # path-mismatch reason (the trimmer probes Core at the wrong path)
+        # and aren't needed for tests anyway.
+        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:WindowsAppSdkSelfContained=true -p:SelfContained=true --no-restore
 
       - name: Locate winapp.exe and add to PATH
         shell: pwsh
