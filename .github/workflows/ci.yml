@@ -69,7 +69,7 @@ jobs:
           Set-ItemProperty -Path $key -Name AllowAllTrustedApps -Value 1 -Type DWord
           Get-ItemProperty -Path $key | Format-List
 
-      - name: Publish WinUICalc (loose layout for winapp run)
+      - name: Publish WinUICalc (loose layout for launch)
         # NOTE: We can't use --no-build here because building the .sln at
         # Platform=x64 maps WinUICalc.Core to AnyCPU (per the .sln project
         # mappings), but project-level publish propagates Platform=x64 to
@@ -77,7 +77,10 @@ jobs:
         # We also disable trimming and ReadyToRun on CI: they aren't needed
         # for tests, and the trimmer trips over the same project-ref path
         # mismatch (Mono.Linker probes Core at bin\x64\Release\net9.0\).
-        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false --no-restore
+        # WindowsAppSdkSelfContained ships the entire Windows App Runtime in
+        # the loose layout so the app can launch on a runner that doesn't
+        # have the framework package installed.
+        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:WindowsAppSdkSelfContained=true -p:SelfContained=true --no-restore
 
       - name: Locate winapp.exe and add to PATH
         shell: pwsh
@@ -91,60 +94,57 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $dir
           & $winapp --version
 
-      - name: UI tests (winapp run + ui-tests.ps1)
+      - name: UI tests (unpackaged Start-Process + ui-tests.ps1)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $publish  = "$env:PUBLISH_DIR"
-          $manifest = 'WinUICalc/Package.appxmanifest'
+          $publish = "$env:PUBLISH_DIR"
+          $exe     = Join-Path $publish 'WinUICalc.exe'
 
-          if (-not (Test-Path $publish))  { throw "Publish dir not found: $publish" }
-          if (-not (Test-Path $manifest)) { throw "Manifest not found: $manifest" }
+          if (-not (Test-Path $publish)) { throw "Publish dir not found: $publish" }
+          if (-not (Test-Path $exe))     { throw "WinUICalc.exe not found at $exe" }
 
           Write-Host "Publish dir: $publish"
-          Write-Host "Manifest:    $manifest"
+          Write-Host "Exe:         $exe"
           Write-Host "winapp:      $(Get-Command winapp | Select-Object -ExpandProperty Source)"
+          Write-Host "Publish dir contents (first 25):"
+          Get-ChildItem $publish -File | Select-Object -First 25 | Format-Table Name,Length -AutoSize
 
-          Write-Host "`nLaunching app via 'winapp run --detach --json'..." -ForegroundColor Cyan
-          $launchRaw = winapp run $publish --manifest $manifest --detach --json 2>&1 | Out-String
-          $launchExit = $LASTEXITCODE
-          Write-Host "winapp run output:" -ForegroundColor DarkGray
-          Write-Host $launchRaw
-          if ($launchExit -ne 0) {
-            throw "winapp run failed (exit $launchExit)"
-          }
-
-          $launch = $launchRaw | ConvertFrom-Json
-          $appPid = [int]$launch.ProcessId
-          if (-not $appPid) { throw "Could not parse ProcessId from launch output." }
-          Write-Host ("Launched WinUICalc PID: {0}  AUMID: {1}" -f $appPid, $launch.AUMID) -ForegroundColor Green
+          # Launch unpackaged. WindowsAppSdk self-contained loose layout means
+          # the runtime is colocated with the .exe; the bootstrap shim
+          # initializes the WinUI runtime without needing a framework package.
+          Write-Host "`nLaunching unpackaged via Start-Process..." -ForegroundColor Cyan
+          $proc = Start-Process -FilePath $exe -PassThru -WorkingDirectory $publish
+          $appPid = $proc.Id
+          Write-Host ("Launched WinUICalc PID: {0}" -f $appPid) -ForegroundColor Green
 
           $exitCode = 1
           try {
-            # Give the WinUI app some time to start: XAML controls resources,
-            # JIT, MicaBackdrop init, etc. Then sanity-check it's still alive
-            # before any UIA query so we can distinguish "crashed at launch"
-            # from "alive but UIA not seeing it".
+            # Give it a moment to bootstrap, then verify it's still alive.
             Start-Sleep -Seconds 5
-            $proc = Get-Process -Id $appPid -ErrorAction SilentlyContinue
-            if (-not $proc) {
+            $alive = Get-Process -Id $appPid -ErrorAction SilentlyContinue
+            if (-not $alive) {
+              Write-Host "App process died within 5s of launch. Dumping recent app crash events..." -ForegroundColor Red
+              try {
+                Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddMinutes(-3)} -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Message -match 'WinUICalc' -or $_.ProviderName -match '\.NET|Application Error' } |
+                  Select-Object -First 5 TimeCreated, ProviderName, Id, LevelDisplayName, @{N='Msg';E={$_.Message.Substring(0, [Math]::Min(800, $_.Message.Length))}} |
+                  Format-List
+              } catch { Write-Host "Event log query failed: $_" }
               throw "App process exited within 5s of launch (early crash?)"
             }
-            Write-Host ("App alive after 5s. Responding={0}, MainWindowHandle={1}" -f $proc.Responding, $proc.MainWindowHandle)
+            Write-Host ("App alive after 5s. Responding={0}, MainWindowHandle={1}" -f $alive.Responding, $alive.MainWindowHandle)
 
             Write-Host "`nlist-windows for the app:" -ForegroundColor Cyan
-            winapp ui list-windows -a $appPid 2>&1 | Out-Host
+            try { winapp ui list-windows -a $appPid 2>&1 | Out-Host } catch { Write-Host "list-windows failed: $_" }
 
             Write-Host "`nDesktop screenshot for diagnostics..." -ForegroundColor Cyan
-            try {
-              winapp ui screenshot --capture-screen -o ui-tests/desktop-pre-wait.png 2>&1 | Out-Host
-            } catch { Write-Host "screenshot failed: $_" }
+            try { winapp ui screenshot --capture-screen -o ui-tests/desktop-pre-wait.png 2>&1 | Out-Host } catch { Write-Host "screenshot failed: $_" }
 
             Write-Host "`nWaiting for AppTitleBar to become visible (up to 90s)..." -ForegroundColor Cyan
             winapp ui wait-for 'AppTitleBar' -a $appPid -t 90000
             if ($LASTEXITCODE -ne 0) {
-              # Capture more diagnostics before giving up.
               Write-Host "wait-for failed; dumping inspect tree..." -ForegroundColor Yellow
               try { winapp ui inspect -a $appPid 2>&1 | Out-Host } catch {}
               try { winapp ui screenshot -a $appPid -o ui-tests/app-window-on-fail.png 2>&1 | Out-Host } catch {}
@@ -160,11 +160,8 @@ jobs:
             Write-Host ("ui-tests.ps1 exited with code {0}" -f $exitCode)
           }
           finally {
-            Write-Host "`nStopping app (PID $appPid) and unregistering dev package..." -ForegroundColor Cyan
+            Write-Host "`nStopping app (PID $appPid)..." -ForegroundColor Cyan
             try { Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue } catch {}
-            try {
-              winapp unregister --manifest $manifest --force --quiet 2>&1 | Out-Null
-            } catch {}
           }
 
           if ($exitCode -ne 0) {
