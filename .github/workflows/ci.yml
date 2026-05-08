@@ -21,7 +21,6 @@ jobs:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
       Configuration: Release
-      PUBLISH_DIR: WinUICalc/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish
 
     steps:
       - name: Checkout
@@ -58,124 +57,41 @@ jobs:
       - name: Unit tests (xUnit)
         run: dotnet test WinUICalc.Tests/WinUICalc.Tests.csproj -c Release --no-build --logger "trx;LogFileName=unit.trx" --results-directory TestResults
 
-      - name: Enable Developer Mode (registry)
-        # Needed so 'winapp run' can register a debug package identity on the
-        # Windows runner without a developer license.
-        shell: pwsh
-        run: |
-          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
-          if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
-          Set-ItemProperty -Path $key -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord
-          Set-ItemProperty -Path $key -Name AllowAllTrustedApps -Value 1 -Type DWord
-          Get-ItemProperty -Path $key | Format-List
+      - name: Setup WinApp CLI
+        uses: microsoft/setup-WinAppCli@v0.1
 
-      - name: Publish WinUICalc (packaged self-contained loose layout)
-        # WindowsAppSdkSelfContained=true colocates the WinAppSDK runtime
-        # into the publish folder AND tells the SDK targets to skip the
-        # AutoInitialize module initializer that would otherwise call
-        # DeploymentManager.Initialize() at startup (which throws
-        # "Class not registered" on a runner where the framework isn't
-        # registered as a package dependency).
-        # We can't use --no-build because building the .sln at Platform=x64
-        # maps WinUICalc.Core to AnyCPU per the .sln, but project-level
-        # publish propagates Platform=x64 to ProjectReferences and looks
-        # for Core.dll at bin\x64\Release\net9.0\.
-        # Trim and ReadyToRun are turned off for the same project-ref
-        # path-mismatch reason (the trimmer probes Core at the wrong path)
-        # and aren't needed for tests anyway.
-        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:WindowsAppSdkSelfContained=true -p:SelfContained=true --no-restore
-
-      - name: Locate winapp.exe and add to PATH
-        shell: pwsh
-        run: |
-          $winapp = Get-ChildItem -Path "$env:USERPROFILE\.nuget\packages\microsoft.windows.sdk.buildtools.winapp\*\tools\win-x64\winapp.exe" -ErrorAction Stop |
-                    Sort-Object FullName -Descending |
-                    Select-Object -First 1 -ExpandProperty FullName
-          if (-not $winapp) { throw 'winapp.exe not found in the NuGet cache.' }
-          Write-Host "Found winapp at: $winapp"
-          $dir = Split-Path $winapp -Parent
-          Add-Content -Path $env:GITHUB_PATH -Value $dir
-          & $winapp --version
-
-      - name: UI tests (winapp run packaged + ui-tests.ps1)
+      - name: UI tests (winapp run + ui-tests.ps1)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $publish  = "$env:PUBLISH_DIR"
-          $manifest = 'WinUICalc/Package.appxmanifest'
+          $buildDir = 'WinUICalc/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64'
+          if (-not (Test-Path $buildDir)) { throw "Build dir not found: $buildDir" }
 
-          if (-not (Test-Path $publish))  { throw "Publish dir not found: $publish" }
-          if (-not (Test-Path $manifest)) { throw "Manifest not found: $manifest" }
-
-          Write-Host "Publish dir: $publish"
-          Write-Host "Manifest:    $manifest"
-          Write-Host "winapp:      $(Get-Command winapp | Select-Object -ExpandProperty Source)"
-
-          Write-Host "`nKey runtime DLLs in publish folder:" -ForegroundColor Cyan
-          Get-ChildItem $publish -File -Filter '*.dll' |
-            Where-Object { $_.Name -match '^(Microsoft\.UI\.Xaml|Microsoft\.WinUI|Microsoft\.WindowsAppRuntime|Microsoft\.Windows\.SDK\.NET|WinRT\.Runtime|coreclr)\.dll$' } |
-            Format-Table Name, Length -AutoSize
-
-          Write-Host "`nLaunching app via 'winapp run --detach --json'..." -ForegroundColor Cyan
-          $launchRaw = winapp run $publish --manifest $manifest --detach --json 2>&1 | Out-String
-          $launchExit = $LASTEXITCODE
-          Write-Host "winapp run output:" -ForegroundColor DarkGray
-          Write-Host $launchRaw
-          if ($launchExit -ne 0) { throw "winapp run failed (exit $launchExit)" }
-
+          Write-Host "Launching app via 'winapp run'..." -ForegroundColor Cyan
+          $launchRaw = winapp run $buildDir --detach --json 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host $launchRaw
+            throw "winapp run failed (exit $LASTEXITCODE)"
+          }
           $launch = $launchRaw | ConvertFrom-Json
           $appPid = [int]$launch.ProcessId
           if (-not $appPid) { throw "Could not parse ProcessId from launch output." }
-          Write-Host ("Launched WinUICalc PID: {0}  AUMID: {1}" -f $appPid, $launch.AUMID) -ForegroundColor Green
+          Write-Host ("Launched PID {0}  AUMID {1}" -f $appPid, $launch.AUMID) -ForegroundColor Green
 
           $exitCode = 1
           try {
-            Start-Sleep -Seconds 5
-            $alive = Get-Process -Id $appPid -ErrorAction SilentlyContinue
-            if (-not $alive) {
-              Write-Host "App process died within 5s of launch. Recent app crash events:" -ForegroundColor Red
-              try {
-                Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddMinutes(-3)} -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Message -match 'WinUICalc' -or $_.ProviderName -match '\.NET|Application Error' } |
-                  Select-Object -First 5 TimeCreated, ProviderName, Id, LevelDisplayName, @{N='Msg';E={$_.Message.Substring(0, [Math]::Min(800, $_.Message.Length))}} |
-                  Format-List
-              } catch { Write-Host "Event log query failed: $_" }
-              throw "App process exited within 5s of launch (early crash?)"
-            }
-            Write-Host ("App alive after 5s. Responding={0}, MainWindowHandle={1}" -f $alive.Responding, $alive.MainWindowHandle)
+            winapp ui wait-for 'AppTitleBar' -a $appPid -t 30000
+            if ($LASTEXITCODE -ne 0) { throw "AppTitleBar did not appear within 30s." }
 
-            Write-Host "`nlist-windows for the app:" -ForegroundColor Cyan
-            try { winapp ui list-windows -a $appPid 2>&1 | Out-Host } catch { Write-Host "list-windows failed: $_" }
-
-            Write-Host "`nDesktop screenshot for diagnostics..." -ForegroundColor Cyan
-            try { winapp ui screenshot --capture-screen -o ui-tests/desktop-pre-wait.png 2>&1 | Out-Host } catch { Write-Host "screenshot failed: $_" }
-
-            Write-Host "`nWaiting for AppTitleBar to become visible (up to 90s)..." -ForegroundColor Cyan
-            winapp ui wait-for 'AppTitleBar' -a $appPid -t 90000
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "wait-for failed; dumping inspect tree..." -ForegroundColor Yellow
-              try { winapp ui inspect -a $appPid 2>&1 | Out-Host } catch {}
-              try { winapp ui screenshot -a $appPid -o ui-tests/app-window-on-fail.png 2>&1 | Out-Host } catch {}
-              throw "AppTitleBar did not appear within 90s."
-            }
-
-            Start-Sleep -Seconds 1
-
-            Write-Host "`nRunning ui-tests/ui-tests.ps1 -AppPid $appPid..." -ForegroundColor Cyan
             pwsh -NoProfile -File ui-tests/ui-tests.ps1 -AppPid $appPid
             $exitCode = $LASTEXITCODE
-            Write-Host ("ui-tests.ps1 exited with code {0}" -f $exitCode)
           }
           finally {
-            Write-Host "`nStopping app (PID $appPid) and unregistering dev package..." -ForegroundColor Cyan
-            try { Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue } catch {}
-            try { winapp unregister --manifest $manifest --force --quiet 2>&1 | Out-Null } catch {}
+            Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
           }
 
-          if ($exitCode -ne 0) {
-            throw "UI tests failed (exit $exitCode)"
-          }
+          if ($exitCode -ne 0) { throw "UI tests failed (exit $exitCode)" }
 
       - name: Upload test artifacts
         if: always()
@@ -186,6 +102,4 @@ jobs:
             TestResults/*.trx
             ui-tests/test-results.json
             ui-tests/test-screenshot.png
-            ui-tests/desktop-pre-wait.png
-            ui-tests/app-window-on-fail.png
           if-no-files-found: warn
