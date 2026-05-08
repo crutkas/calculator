@@ -70,7 +70,14 @@ jobs:
           Get-ItemProperty -Path $key | Format-List
 
       - name: Publish WinUICalc (loose layout for winapp run)
-        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 --no-restore --no-build
+        # NOTE: We can't use --no-build here because building the .sln at
+        # Platform=x64 maps WinUICalc.Core to AnyCPU (per the .sln project
+        # mappings), but project-level publish propagates Platform=x64 to
+        # ProjectReferences and looks for Core.dll under bin\x64\Release.
+        # We also disable trimming and ReadyToRun on CI: they aren't needed
+        # for tests, and the trimmer trips over the same project-ref path
+        # mismatch (Mono.Linker probes Core at bin\x64\Release\net9.0\).
+        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false --no-restore
 
       - name: Locate winapp.exe and add to PATH
         shell: pwsh
