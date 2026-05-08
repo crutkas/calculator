@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="WinUICalc.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:WinUICalc"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="WinUICalc"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TitleBar
+            x:Name="AppTitleBar"
+            Title="WinUICalc">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="Assets/AppIcon.ico" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <!--  Calculator surface  -->
+        <Grid
+            Grid.Row="1"
+            Padding="16"
+            RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!--  Display  -->
+            <Border
+                Grid.Row="0"
+                Padding="16,12"
+                Background="{ThemeResource ControlFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="{StaticResource ControlCornerRadius}">
+                <TextBlock
+                    x:Name="DisplayText"
+                    AutomationProperties.AutomationId="DisplayText"
+                    AutomationProperties.Name="Calculator display"
+                    IsTextSelectionEnabled="True"
+                    Style="{StaticResource TitleLargeTextBlockStyle}"
+                    Text="{x:Bind ViewModel.Display, Mode=OneWay}"
+                    TextAlignment="Right" />
+            </Border>
+
+            <!--  Keypad  -->
+            <Grid
+                Grid.Row="1"
+                ColumnSpacing="8"
+                RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Grid.Resources>
+                    <!--  Implicit Button style: stretch to fill grid cell, large legible glyph  -->
+                    <Style TargetType="Button">
+                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                        <Setter Property="VerticalAlignment" Value="Stretch" />
+                        <Setter Property="MinWidth" Value="56" />
+                        <Setter Property="MinHeight" Value="56" />
+                        <Setter Property="FontSize" Value="20" />
+                    </Style>
+                </Grid.Resources>
+
+                <!--  Row 0: C, ⌫, ÷, ×  -->
+                <Button
+                    Grid.Row="0"
+                    Grid.Column="0"
+                    AutomationProperties.AutomationId="BtnClear"
+                    AutomationProperties.Name="Clear"
+                    Command="{x:Bind ViewModel.ClearCommand}"
+                    Content="C" />
+                <Button
+                    Grid.Row="0"
+                    Grid.Column="1"
+                    AutomationProperties.AutomationId="BtnBackspace"
+                    AutomationProperties.Name="Backspace"
+                    Command="{x:Bind ViewModel.BackspaceCommand}"
+                    Content="&#x232B;" />
+                <Button
+                    Grid.Row="0"
+                    Grid.Column="2"
+                    AutomationProperties.AutomationId="BtnDivide"
+                    AutomationProperties.Name="Divide"
+                    Command="{x:Bind ViewModel.OperatorCommand}"
+                    CommandParameter="÷"
+                    Content="÷" />
+                <Button
+                    Grid.Row="0"
+                    Grid.Column="3"
+                    AutomationProperties.AutomationId="BtnMultiply"
+                    AutomationProperties.Name="Multiply"
+                    Command="{x:Bind ViewModel.OperatorCommand}"
+                    CommandParameter="×"
+                    Content="×" />
+
+                <!--  Row 1: 7 8 9 −  -->
+                <Button
+                    Grid.Row="1"
+                    Grid.Column="0"
+                    AutomationProperties.AutomationId="BtnDigit7"
+                    AutomationProperties.Name="Seven"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="7"
+                    Content="7" />
+                <Button
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    AutomationProperties.AutomationId="BtnDigit8"
+                    AutomationProperties.Name="Eight"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="8"
+                    Content="8" />
+                <Button
+                    Grid.Row="1"
+                    Grid.Column="2"
+                    AutomationProperties.AutomationId="BtnDigit9"
+                    AutomationProperties.Name="Nine"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="9"
+                    Content="9" />
+                <Button
+                    Grid.Row="1"
+                    Grid.Column="3"
+                    AutomationProperties.AutomationId="BtnSubtract"
+                    AutomationProperties.Name="Subtract"
+                    Command="{x:Bind ViewModel.OperatorCommand}"
+                    CommandParameter="−"
+                    Content="−" />
+
+                <!--  Row 2: 4 5 6 +  -->
+                <Button
+                    Grid.Row="2"
+                    Grid.Column="0"
+                    AutomationProperties.AutomationId="BtnDigit4"
+                    AutomationProperties.Name="Four"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="4"
+                    Content="4" />
+                <Button
+                    Grid.Row="2"
+                    Grid.Column="1"
+                    AutomationProperties.AutomationId="BtnDigit5"
+                    AutomationProperties.Name="Five"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="5"
+                    Content="5" />
+                <Button
+                    Grid.Row="2"
+                    Grid.Column="2"
+                    AutomationProperties.AutomationId="BtnDigit6"
+                    AutomationProperties.Name="Six"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="6"
+                    Content="6" />
+                <Button
+                    Grid.Row="2"
+                    Grid.Column="3"
+                    AutomationProperties.AutomationId="BtnAdd"
+                    AutomationProperties.Name="Add"
+                    Command="{x:Bind ViewModel.OperatorCommand}"
+                    CommandParameter="+"
+                    Content="+" />
+
+                <!--  Row 3: 1 2 3 = (= spans two rows)  -->
+                <Button
+                    Grid.Row="3"
+                    Grid.Column="0"
+                    AutomationProperties.AutomationId="BtnDigit1"
+                    AutomationProperties.Name="One"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="1"
+                    Content="1" />
+                <Button
+                    Grid.Row="3"
+                    Grid.Column="1"
+                    AutomationProperties.AutomationId="BtnDigit2"
+                    AutomationProperties.Name="Two"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="2"
+                    Content="2" />
+                <Button
+                    Grid.Row="3"
+                    Grid.Column="2"
+                    AutomationProperties.AutomationId="BtnDigit3"
+                    AutomationProperties.Name="Three"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="3"
+                    Content="3" />
+                <Button
+                    Grid.Row="3"
+                    Grid.RowSpan="2"
+                    Grid.Column="3"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
+                    AutomationProperties.AutomationId="BtnEquals"
+                    AutomationProperties.Name="Equals"
+                    Command="{x:Bind ViewModel.EqualsCommand}"
+                    Content="="
+                    FontSize="20"
+                    Style="{StaticResource AccentButtonStyle}" />
+
+                <!--  Row 4: 0 (spans 2 cols), .  -->
+                <Button
+                    Grid.Row="4"
+                    Grid.Column="0"
+                    Grid.ColumnSpan="2"
+                    AutomationProperties.AutomationId="BtnDigit0"
+                    AutomationProperties.Name="Zero"
+                    Command="{x:Bind ViewModel.DigitCommand}"
+                    CommandParameter="0"
+                    Content="0" />
+                <Button
+                    Grid.Row="4"
+                    Grid.Column="2"
+                    AutomationProperties.AutomationId="BtnDecimal"
+                    AutomationProperties.Name="Decimal point"
+                    Command="{x:Bind ViewModel.DecimalCommand}"
+                    Content="." />
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build + unit tests + UI tests (Release|x64)
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      Configuration: Release
+      PUBLISH_DIR: WinUICalc/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET (from global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Show .NET info
+        shell: pwsh
+        run: |
+          dotnet --info
+          Write-Host "---"
+          dotnet --list-sdks
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore (Platform=x64)
+        # WinUICalc.csproj computes RuntimeIdentifier from $(Platform); it must
+        # be set at restore time so the win-x64 RID assets are written.
+        run: dotnet restore WinUICalc.sln -p:Platform=x64
+
+      - name: Build (Release|x64)
+        run: dotnet build WinUICalc.sln -c Release -p:Platform=x64 --no-restore
+
+      - name: Unit tests (xUnit)
+        run: dotnet test WinUICalc.Tests/WinUICalc.Tests.csproj -c Release --no-build --logger "trx;LogFileName=unit.trx" --results-directory TestResults
+
+      - name: Enable Developer Mode (registry)
+        # Needed so 'winapp run' can register a debug package identity on the
+        # Windows runner without a developer license.
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+          Set-ItemProperty -Path $key -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord
+          Set-ItemProperty -Path $key -Name AllowAllTrustedApps -Value 1 -Type DWord
+          Get-ItemProperty -Path $key | Format-List
+
+      - name: Publish WinUICalc (loose layout for winapp run)
+        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 --no-restore --no-build
+
+      - name: Locate winapp.exe and add to PATH
+        shell: pwsh
+        run: |
+          $winapp = Get-ChildItem -Path "$env:USERPROFILE\.nuget\packages\microsoft.windows.sdk.buildtools.winapp\*\tools\win-x64\winapp.exe" -ErrorAction Stop |
+                    Sort-Object FullName -Descending |
+                    Select-Object -First 1 -ExpandProperty FullName
+          if (-not $winapp) { throw 'winapp.exe not found in the NuGet cache.' }
+          Write-Host "Found winapp at: $winapp"
+          $dir = Split-Path $winapp -Parent
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+          & $winapp --version
+
+      - name: UI tests (winapp run + ui-tests.ps1)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $publish  = "$env:PUBLISH_DIR"
+          $manifest = 'WinUICalc/Package.appxmanifest'
+
+          if (-not (Test-Path $publish))  { throw "Publish dir not found: $publish" }
+          if (-not (Test-Path $manifest)) { throw "Manifest not found: $manifest" }
+
+          Write-Host "Publish dir: $publish"
+          Write-Host "Manifest:    $manifest"
+          Write-Host "winapp:      $(Get-Command winapp | Select-Object -ExpandProperty Source)"
+
+          Write-Host "`nLaunching app via 'winapp run --detach --json'..." -ForegroundColor Cyan
+          $launchRaw = winapp run $publish --manifest $manifest --detach --json 2>&1 | Out-String
+          $launchExit = $LASTEXITCODE
+          Write-Host "winapp run output:" -ForegroundColor DarkGray
+          Write-Host $launchRaw
+          if ($launchExit -ne 0) {
+            throw "winapp run failed (exit $launchExit)"
+          }
+
+          $launch = $launchRaw | ConvertFrom-Json
+          $appPid = [int]$launch.ProcessId
+          if (-not $appPid) { throw "Could not parse ProcessId from launch output." }
+          Write-Host ("Launched WinUICalc PID: {0}  AUMID: {1}" -f $appPid, $launch.AUMID) -ForegroundColor Green
+
+          $exitCode = 1
+          try {
+            Write-Host "`nWaiting for AppTitleBar to become visible (up to 60s)..." -ForegroundColor Cyan
+            winapp ui wait-for 'AppTitleBar' -a $appPid -t 60000
+            if ($LASTEXITCODE -ne 0) { throw "AppTitleBar did not appear within 60s." }
+
+            # Tiny extra settle so x:Bind has fully initialized DisplayText.
+            Start-Sleep -Seconds 1
+
+            Write-Host "`nRunning ui-tests/ui-tests.ps1 -AppPid $appPid..." -ForegroundColor Cyan
+            pwsh -NoProfile -File ui-tests/ui-tests.ps1 -AppPid $appPid
+            $exitCode = $LASTEXITCODE
+            Write-Host ("ui-tests.ps1 exited with code {0}" -f $exitCode)
+          }
+          finally {
+            Write-Host "`nStopping app (PID $appPid) and unregistering dev package..." -ForegroundColor Cyan
+            try { Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue } catch {}
+            try {
+              winapp unregister --manifest $manifest --force --quiet 2>&1 | Out-Null
+            } catch {}
+          }
+
+          if ($exitCode -ne 0) {
+            throw "UI tests failed (exit $exitCode)"
+          }
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TestResults/*.trx
+            ui-tests/test-results.json
+            ui-tests/test-screenshot.png
+          if-no-files-found: warn

@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    Microsoft.WindowsAppSDK.Analyzers (ships with the local win-dev-skills toolchain).
+    Catches WinUI 3 / Windows App SDK pitfalls as compiler warnings.
+
+    Guarded with Exists() so the build still works on machines / CI runners
+    that don't have the win-dev-skills plugin installed (e.g. GitHub Actions).
+  -->
+  <PropertyGroup>
+    <_WinDevSkillsAnalyzerDll>$(USERPROFILE)\.copilot\installed-plugins\win-dev-skills\winui\skills\winui-dev-workflow\analyzer\Microsoft.WindowsAppSDK.Analyzers.dll</_WinDevSkillsAnalyzerDll>
+    <_WinDevSkillsAnalyzerTargets>$(USERPROFILE)\.copilot\installed-plugins\win-dev-skills\winui\skills\winui-dev-workflow\analyzer\Microsoft.WindowsAppSDK.Analyzers.targets</_WinDevSkillsAnalyzerTargets>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(_WinDevSkillsAnalyzerDll)')">
+    <Analyzer Include="$(_WinDevSkillsAnalyzerDll)" />
+  </ItemGroup>
+  <Import Project="$(_WinDevSkillsAnalyzerTargets)" Condition="Exists('$(_WinDevSkillsAnalyzerTargets)')" />
+</Project>
