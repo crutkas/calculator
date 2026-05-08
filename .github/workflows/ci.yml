@@ -77,10 +77,33 @@ jobs:
         # We also disable trimming and ReadyToRun on CI: they aren't needed
         # for tests, and the trimmer trips over the same project-ref path
         # mismatch (Mono.Linker probes Core at bin\x64\Release\net9.0\).
-        # WindowsAppSdkSelfContained ships the entire Windows App Runtime in
-        # the loose layout so the app can launch on a runner that doesn't
-        # have the framework package installed.
-        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:WindowsAppSdkSelfContained=true -p:SelfContained=true --no-restore
+        run: dotnet publish WinUICalc/WinUICalc.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:PublishTrimmed=false -p:PublishReadyToRun=false --no-restore
+
+      - name: Install Windows App Runtime 2.0.1 (framework package)
+        # WinAppSDK 2.0.x's Microsoft.UI.Xaml.dll v3.2.0.0 fails to initialize
+        # in self-contained mode on Windows Server 2025 (0xc000027b inside
+        # Microsoft.UI.Xaml.dll). Installing the real framework MSIX gives
+        # the XAML runtime a stable, system-managed home and lets the
+        # packaged dev identity activate cleanly via AUMID.
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "$env:USERPROFILE\.nuget\packages\microsoft.windowsappsdk\*\tools\WindowsAppRuntimeInstall*.exe" -ErrorAction SilentlyContinue |
+                       Sort-Object FullName -Descending |
+                       Select-Object -First 1 -ExpandProperty FullName
+          if (-not $installer) {
+            Write-Host "WindowsAppRuntimeInstall not found in NuGet cache; downloading from aka.ms..." -ForegroundColor Yellow
+            $installer = Join-Path $env:RUNNER_TEMP 'windowsappruntimeinstall-x64.exe'
+            Invoke-WebRequest -Uri 'https://aka.ms/windowsappsdk/2.0/2.0.1/windowsappruntimeinstall-x64.exe' -OutFile $installer
+          }
+          Write-Host "Using installer: $installer"
+          & $installer --quiet
+          Write-Host "Installer exit: $LASTEXITCODE"
+          # 0 = success; ERROR_SUCCESS_REBOOT_INITIATED (1641) / REBOOT_REQUIRED (3010) are also fine.
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1641 -and $LASTEXITCODE -ne 3010) {
+            throw "WindowsAppRuntimeInstall failed (exit $LASTEXITCODE)"
+          }
+          Write-Host "Registered WindowsAppRuntime packages:"
+          Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime*' | Select-Object Name, Version | Format-Table -AutoSize
 
       - name: Locate winapp.exe and add to PATH
         shell: pwsh
@@ -94,38 +117,44 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $dir
           & $winapp --version
 
-      - name: UI tests (unpackaged Start-Process + ui-tests.ps1)
+      - name: UI tests (winapp run packaged + ui-tests.ps1)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $publish = "$env:PUBLISH_DIR"
-          $exe     = Join-Path $publish 'WinUICalc.exe'
+          $publish  = "$env:PUBLISH_DIR"
+          $manifest = 'WinUICalc/Package.appxmanifest'
 
-          if (-not (Test-Path $publish)) { throw "Publish dir not found: $publish" }
-          if (-not (Test-Path $exe))     { throw "WinUICalc.exe not found at $exe" }
+          if (-not (Test-Path $publish))  { throw "Publish dir not found: $publish" }
+          if (-not (Test-Path $manifest)) { throw "Manifest not found: $manifest" }
 
           Write-Host "Publish dir: $publish"
-          Write-Host "Exe:         $exe"
+          Write-Host "Manifest:    $manifest"
           Write-Host "winapp:      $(Get-Command winapp | Select-Object -ExpandProperty Source)"
-          Write-Host "Publish dir contents (first 25):"
-          Get-ChildItem $publish -File | Select-Object -First 25 | Format-Table Name,Length -AutoSize
 
-          # Launch unpackaged. WindowsAppSdk self-contained loose layout means
-          # the runtime is colocated with the .exe; the bootstrap shim
-          # initializes the WinUI runtime without needing a framework package.
-          Write-Host "`nLaunching unpackaged via Start-Process..." -ForegroundColor Cyan
-          $proc = Start-Process -FilePath $exe -PassThru -WorkingDirectory $publish
-          $appPid = $proc.Id
-          Write-Host ("Launched WinUICalc PID: {0}" -f $appPid) -ForegroundColor Green
+          Write-Host "`nKey runtime DLLs in publish folder:" -ForegroundColor Cyan
+          Get-ChildItem $publish -File -Filter '*.dll' |
+            Where-Object { $_.Name -match '^(Microsoft\.UI\.Xaml|Microsoft\.WinUI|Microsoft\.WindowsAppRuntime|Microsoft\.Windows\.SDK\.NET|WinRT\.Runtime|coreclr)\.dll$' } |
+            Format-Table Name, Length -AutoSize
+
+          Write-Host "`nLaunching app via 'winapp run --detach --json'..." -ForegroundColor Cyan
+          $launchRaw = winapp run $publish --manifest $manifest --detach --json 2>&1 | Out-String
+          $launchExit = $LASTEXITCODE
+          Write-Host "winapp run output:" -ForegroundColor DarkGray
+          Write-Host $launchRaw
+          if ($launchExit -ne 0) { throw "winapp run failed (exit $launchExit)" }
+
+          $launch = $launchRaw | ConvertFrom-Json
+          $appPid = [int]$launch.ProcessId
+          if (-not $appPid) { throw "Could not parse ProcessId from launch output." }
+          Write-Host ("Launched WinUICalc PID: {0}  AUMID: {1}" -f $appPid, $launch.AUMID) -ForegroundColor Green
 
           $exitCode = 1
           try {
-            # Give it a moment to bootstrap, then verify it's still alive.
             Start-Sleep -Seconds 5
             $alive = Get-Process -Id $appPid -ErrorAction SilentlyContinue
             if (-not $alive) {
-              Write-Host "App process died within 5s of launch. Dumping recent app crash events..." -ForegroundColor Red
+              Write-Host "App process died within 5s of launch. Recent app crash events:" -ForegroundColor Red
               try {
                 Get-WinEvent -FilterHashtable @{LogName='Application'; Level=1,2; StartTime=(Get-Date).AddMinutes(-3)} -ErrorAction SilentlyContinue |
                   Where-Object { $_.Message -match 'WinUICalc' -or $_.ProviderName -match '\.NET|Application Error' } |
@@ -151,7 +180,6 @@ jobs:
               throw "AppTitleBar did not appear within 90s."
             }
 
-            # Tiny extra settle so x:Bind has fully initialized DisplayText.
             Start-Sleep -Seconds 1
 
             Write-Host "`nRunning ui-tests/ui-tests.ps1 -AppPid $appPid..." -ForegroundColor Cyan
@@ -160,8 +188,9 @@ jobs:
             Write-Host ("ui-tests.ps1 exited with code {0}" -f $exitCode)
           }
           finally {
-            Write-Host "`nStopping app (PID $appPid)..." -ForegroundColor Cyan
+            Write-Host "`nStopping app (PID $appPid) and unregistering dev package..." -ForegroundColor Cyan
             try { Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue } catch {}
+            try { winapp unregister --manifest $manifest --force --quiet 2>&1 | Out-Null } catch {}
           }
 
           if ($exitCode -ne 0) {
