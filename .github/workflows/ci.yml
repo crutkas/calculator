@@ -122,9 +122,34 @@ jobs:
 
           $exitCode = 1
           try {
-            Write-Host "`nWaiting for AppTitleBar to become visible (up to 60s)..." -ForegroundColor Cyan
-            winapp ui wait-for 'AppTitleBar' -a $appPid -t 60000
-            if ($LASTEXITCODE -ne 0) { throw "AppTitleBar did not appear within 60s." }
+            # Give the WinUI app some time to start: XAML controls resources,
+            # JIT, MicaBackdrop init, etc. Then sanity-check it's still alive
+            # before any UIA query so we can distinguish "crashed at launch"
+            # from "alive but UIA not seeing it".
+            Start-Sleep -Seconds 5
+            $proc = Get-Process -Id $appPid -ErrorAction SilentlyContinue
+            if (-not $proc) {
+              throw "App process exited within 5s of launch (early crash?)"
+            }
+            Write-Host ("App alive after 5s. Responding={0}, MainWindowHandle={1}" -f $proc.Responding, $proc.MainWindowHandle)
+
+            Write-Host "`nlist-windows for the app:" -ForegroundColor Cyan
+            winapp ui list-windows -a $appPid 2>&1 | Out-Host
+
+            Write-Host "`nDesktop screenshot for diagnostics..." -ForegroundColor Cyan
+            try {
+              winapp ui screenshot --capture-screen -o ui-tests/desktop-pre-wait.png 2>&1 | Out-Host
+            } catch { Write-Host "screenshot failed: $_" }
+
+            Write-Host "`nWaiting for AppTitleBar to become visible (up to 90s)..." -ForegroundColor Cyan
+            winapp ui wait-for 'AppTitleBar' -a $appPid -t 90000
+            if ($LASTEXITCODE -ne 0) {
+              # Capture more diagnostics before giving up.
+              Write-Host "wait-for failed; dumping inspect tree..." -ForegroundColor Yellow
+              try { winapp ui inspect -a $appPid 2>&1 | Out-Host } catch {}
+              try { winapp ui screenshot -a $appPid -o ui-tests/app-window-on-fail.png 2>&1 | Out-Host } catch {}
+              throw "AppTitleBar did not appear within 90s."
+            }
 
             # Tiny extra settle so x:Bind has fully initialized DisplayText.
             Start-Sleep -Seconds 1
@@ -155,4 +180,6 @@ jobs:
             TestResults/*.trx
             ui-tests/test-results.json
             ui-tests/test-screenshot.png
+            ui-tests/desktop-pre-wait.png
+            ui-tests/app-window-on-fail.png
           if-no-files-found: warn
