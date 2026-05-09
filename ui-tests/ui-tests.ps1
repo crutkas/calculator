@@ -114,6 +114,17 @@ Test-UI "Addition: 2 + 3 = 5" {
     winapp ui wait-for "DisplayText" -a $AppPid --value "5" -t 2000
 }
 
+# Intentional sanity-check failure: verifies CI actually reports UI test
+# failures (not silently green). Remove this block after one red run.
+Test-UI "INTENTIONAL FAIL: 2 + 3 should NOT equal 99" {
+    Reset
+    Press "BtnDigit2"
+    Press "BtnAdd"
+    Press "BtnDigit3"
+    Press "BtnEquals"
+    winapp ui wait-for "DisplayText" -a $AppPid --value "99" -t 2000
+}
+
 Test-UI "Subtraction (negative result): 2 - 5 = -3" {
     Reset
     Press "BtnDigit2"
