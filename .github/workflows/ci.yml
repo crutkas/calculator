@@ -60,16 +60,17 @@ jobs:
       - name: Setup WinApp CLI
         uses: microsoft/setup-WinAppCli@v0.1
 
-      - name: Install Windows App Runtime (from restored NuGet)
+      - name: Install Windows App Runtime (MSIX framework packages)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = Get-ChildItem -Path "$env:USERPROFILE\.nuget\packages\microsoft.windowsappsdk\*\tools\WindowsAppRuntimeInstall-x64.exe" -ErrorAction SilentlyContinue |
-                       Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $installer) { throw 'WindowsAppRuntimeInstall-x64.exe not found under ~/.nuget/packages/microsoft.windowsappsdk.' }
-          Write-Host "Installer: $installer"
-          & $installer --quiet --force
-          if ($LASTEXITCODE -ne 0) { throw "Runtime install failed (exit $LASTEXITCODE)" }
+          $msixDir = "$env:USERPROFILE\.nuget\packages\microsoft.windowsappsdk.runtime\2.0.1\tools\MSIX\win10-x64"
+          if (-not (Test-Path $msixDir)) { throw "MSIX dir not found: $msixDir" }
+          Get-ChildItem $msixDir -Filter '*.msix' | ForEach-Object {
+            Write-Host "Adding $($_.Name)"
+            Add-AppxPackage -Path $_.FullName -ForceApplicationShutdown
+          }
+          Get-AppxPackage Microsoft.WindowsAppRuntime.2 | Format-List Name, Version, Architecture, IsFramework, PackageFullName
 
       - name: UI tests (winapp run + ui-tests.ps1)
         shell: pwsh
