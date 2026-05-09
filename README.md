@@ -7,6 +7,12 @@ MVVM (CommunityToolkit.Mvvm).
 
 ![CI](https://github.com/crutkas/calculator/actions/workflows/ci.yml/badge.svg)
 
+## Screenshots
+
+| Idle | Result of `12 + 7 =` | Divide-by-zero error |
+|:---:|:---:|:---:|
+| ![Idle state](docs/screenshots/01-idle.png) | ![Result state](docs/screenshots/03-result.png) | ![Error state](docs/screenshots/04-error.png) |
+
 ## Features
 
 - Standard 4-function calculator (add, subtract, multiply, divide) with chaining
@@ -72,8 +78,10 @@ The CI workflow does the same thing on `windows-latest` for every push and PR.
 1. Installs the .NET SDK pinned in `global.json`.
 2. Restores and builds the solution at `Release|x64`.
 3. Runs unit tests (`xUnit`, results published as `unit.trx`).
-4. Publishes the WinUI app to a loose layout, registers it with `winapp run`,
-   and runs `ui-tests\ui-tests.ps1` against the live process.
+4. Sets up the WinApp CLI (`microsoft/setup-WinAppCli`), installs the
+   `Microsoft.WindowsAppRuntime.2` framework MSIXes from the restored NuGet,
+   launches the app with `winapp run` against the build output, and runs
+   `ui-tests\ui-tests.ps1` against the live process.
 5. Uploads the `.trx` results, the UI test JSON, and the final screenshot
    as workflow artifacts.
 
